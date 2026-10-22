@@ -17,6 +17,9 @@ service-account*.json
 .pypirc
 .htpasswd
 
+# ---- this tool: local copy of restore records (regenerated on every apply) ----
+_restore/
+
 # ---- editors & OS ----
 .DS_Store
 Thumbs.db

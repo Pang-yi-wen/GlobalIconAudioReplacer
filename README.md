@@ -91,9 +91,12 @@ IconReplacer.exe lnktest OIP-C_256x256.ico
 | 文件 | 说明 |
 |---|---|
 | `IconReplacer.exe` | 编译好的主程序，静态单文件，无需任何运行环境 |
+| `一键恢复.bat` | 双击即可完整还原（等同于 `restore`） |
 | `icon_replacer.cpp` | 源码，单文件、无第三方库 |
 | `OIP-C_256x256.ico` | 自带的图标示例，图案为蒋结实 |
 | `使用说明.txt` | 详细的中文使用说明 |
+
+运行时会在程序目录生成 `_restore\`，存放还原记录的副本——别删它。
 
 ---
 
@@ -108,6 +111,20 @@ IconReplacer.exe lnktest OIP-C_256x256.ico
 （`^` 是 cmd 的换行符；PowerShell 里换成 `` ` `` 反引号。也可以在 Dev-C++ 里新建工程、把 `.cpp` 加进去直接编译。）
 
 ---
+
+## 一键恢复
+
+三种方式，效果完全一样：
+
+1. **双击 `一键恢复.bat`** —— 最省事
+2. 双击 `IconReplacer.exe` 后菜单选 **2**
+3. 命令行 `IconReplacer.exe restore`
+
+`restore` 一次还原三样东西：注册表里的 `DefaultIcon`、被改写过的快捷方式图标（逐个写回原值）、
+被关掉的缩略图设置（恢复成你原来的样子）。之后会重启资源管理器，图标立刻回到系统原始状态。
+
+**记录丢了也能恢复**：每次 `apply` 都会在程序目录的 `_restore\` 里另存一份还原记录。
+如果 `%LOCALAPPDATA%` 下那份被清理工具删掉了，`restore` 会自动从这里取回——所以别删 `_restore\` 文件夹。
 
 ## 三类硬骨头的处理细节
 

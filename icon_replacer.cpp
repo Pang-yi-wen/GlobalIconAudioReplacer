@@ -432,6 +432,53 @@ static bool loadState(std::wstring& icon, std::vector<Entry>& es) {
     return true;
 }
 
+// ------------------------------------------------------------ 还原记录备份
+//
+// 状态文件默认只躺在 %LOCALAPPDATA% 里, 一旦被清理工具删掉就再也还原不回去。
+// 所以每次 apply 之后往程序目录留一份副本; restore 时若本机那份没了, 自动取回。
+
+static std::wstring exeDir() {
+    wchar_t buf[MAX_PATH * 4];
+    DWORD n = GetModuleFileNameW(NULL, buf, MAX_PATH * 4);
+    if (!n || n >= MAX_PATH * 4) return L"";
+    std::wstring p(buf, n);
+    size_t s = p.find_last_of(L"\\/");
+    return (s == std::wstring::npos) ? L"" : p.substr(0, s);
+}
+
+static std::wstring backupDir() {
+    std::wstring d = exeDir();
+    if (d.empty()) return L"";
+    std::wstring b = d + L"\\_restore";
+    CreateDirectoryW(b.c_str(), NULL);
+    return b;
+}
+
+static const wchar_t* STATE_NAMES[] = {L"applied.txt", L"applied_lnk.txt", L"applied_thumb.txt"};
+
+static void backupState() {
+    std::wstring b = backupDir();
+    if (b.empty()) return;
+    for (auto n : STATE_NAMES) {
+        std::wstring src = appDir() + L"\\" + n;
+        if (fileExists(src)) CopyFileW(src.c_str(), (b + L"\\" + n).c_str(), FALSE);
+    }
+}
+
+// 本机记录丢了就从备份取回; 返回是否取回了任何一份
+static bool restoreStateFromBackup() {
+    std::wstring b = backupDir();
+    if (b.empty()) return false;
+    bool any = false;
+    for (auto n : STATE_NAMES) {
+        std::wstring src = b + L"\\" + n;
+        std::wstring dst = appDir() + L"\\" + n;
+        if (fileExists(src) && !fileExists(dst))
+            if (CopyFileW(src.c_str(), dst.c_str(), FALSE)) any = true;
+    }
+    return any;
+}
+
 // ------------------------------------------------------------ 快捷方式 (.lnk)
 //
 // .lnk 的图标不在注册表里, 而是写在每个快捷方式文件内部 (IShellLink 的图标位置),
@@ -815,6 +862,13 @@ static int cmdApply(const std::wstring& srcArg, const Opts& o) {
         P(L"[ok] 已关闭资源管理器缩略图 (图片/视频不再预览, 改用统一图标)");
     }
 
+    // ---- 还原记录在程序目录再留一份, 免得 %LOCALAPPDATA% 那份被清理掉
+    std::wstring bk = backupDir();
+    if (!bk.empty()) {
+        backupState();
+        P(L"[ok] 还原记录另存一份: " + bk);
+    }
+
     P(L"\n三类硬骨头的处理:");
     P(L"  .lnk    已逐个改写快捷方式文件内部的图标位置 (--no-lnk 可跳过)");
     P(L"  .ico    已写入 DefaultIcon 并关闭缩略图 (--keep-thumbnails 可保留预览)");
@@ -829,6 +883,10 @@ static int cmdApply(const std::wstring& srcArg, const Opts& o) {
 }
 
 static int cmdRestore(bool doRefresh, bool restart) {
+    // 本机那份记录没了就从程序目录的备份里取回
+    if (restoreStateFromBackup())
+        P(L"[info] 本机还原记录缺失, 已从程序目录的备份取回");
+
     std::wstring icon;
     std::vector<Entry> es;
     if (!loadState(icon, es)) {
@@ -889,6 +947,8 @@ static int cmdStatus() {
         P(L"状态:     未应用 (系统原始图标)");
     }
     P(L"状态目录: " + appDir());
+    std::wstring bk = backupDir();
+    if (!bk.empty()) P(L"备份目录: " + bk);
     return 0;
 }
 
