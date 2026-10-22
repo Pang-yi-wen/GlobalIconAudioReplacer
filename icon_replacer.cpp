@@ -9,6 +9,15 @@
 //       本程序在 HKCU\Software\Classes 下为每种类型写入 DefaultIcon,
 //       使其统一指向指定 .ico。用户级注册优先于系统级, 无需管理员权限。
 //
+// 三种"硬骨头"类型的处理:
+//   .lnk  快捷方式的图标写在每个 .lnk 文件内部, 注册表的 DefaultIcon 管不到它,
+//         所以逐个用 IShellLink::SetIconLocation 改写文件本身, 并把原图标位置
+//         记进状态文件, restore 时原样写回。
+//   .ico  系统会用缩略图处理器按图片自身内容显示, 把 DefaultIcon 盖掉,
+//         所以除写 DefaultIcon 外还要关掉资源管理器缩略图 (IconsOnly)。
+//   .exe  写入 exefile 的 DefaultIcon (尽力而为); shell 在部分视图下仍会直接
+//         从文件资源里提取原图标, 这是系统行为, 注册表层面无法再进一步。
+//
 // 编码: 全程 UTF-16 宽字符。控制台输入输出走 ReadConsoleW/WriteConsoleW,
 //       不经过控制台代码页, 因此中文路径在 GBK(936) 的 cmd 下也不会损坏;
 //       状态文件以 UTF-16LE 存储, 不做任何编码往返。
@@ -30,10 +39,14 @@
 //   --index N              图标索引, 默认 0
 //   --exclude .a .b ...    排除指定扩展名
 //   --yes                  跳过确认
+//   --no-lnk               不改写快捷方式 (.lnk) 文件
+//   --lnk-dir <目录>       额外扫描该目录下的快捷方式, 可写多次
+//   --keep-thumbnails      不关闭缩略图 (图片仍按自身内容显示)
 
 #define _WIN32_WINNT 0x0600
 #include <windows.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <shellapi.h>
 #include <stdio.h>
 #include <string>
@@ -419,6 +432,213 @@ static bool loadState(std::wstring& icon, std::vector<Entry>& es) {
     return true;
 }
 
+// ------------------------------------------------------------ 快捷方式 (.lnk)
+//
+// .lnk 的图标不在注册表里, 而是写在每个快捷方式文件内部 (IShellLink 的图标位置),
+// 所以注册表的 DefaultIcon 对它无效, 只能逐个改写文件本身。
+// 改写前先读出原图标位置存进状态文件, restore 时原样写回。
+
+struct LnkEntry {
+    std::wstring path;
+    std::wstring oldIcon;
+    int oldIndex = 0;
+};
+
+static std::wstring lnkStateFile() { return appDir() + L"\\applied_lnk.txt"; }
+
+static bool comReady() {
+    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+}
+
+// 用字符串现取 GUID, 省掉链接 uuid 库的麻烦
+static bool lnkOpen(const std::wstring& lnk, IShellLinkW*& sl, IPersistFile*& pf) {
+    CLSID clsid; IID iidSL, iidPF;
+    if (FAILED(CLSIDFromString(L"{00021401-0000-0000-C000-000000000046}", &clsid))) return false;
+    if (FAILED(IIDFromString(L"{000214F9-0000-0000-C000-000000000046}", &iidSL))) return false;
+    if (FAILED(IIDFromString(L"{0000010B-0000-0000-C000-000000000046}", &iidPF))) return false;
+    sl = NULL; pf = NULL;
+    if (FAILED(CoCreateInstance(clsid, NULL, CLSCTX_INPROC_SERVER, iidSL, (void**)&sl)) || !sl) return false;
+    if (FAILED(sl->QueryInterface(iidPF, (void**)&pf)) || !pf) { sl->Release(); sl = NULL; return false; }
+    if (FAILED(pf->Load(lnk.c_str(), STGM_READWRITE)) && FAILED(pf->Load(lnk.c_str(), STGM_READ))) {
+        pf->Release(); sl->Release(); sl = NULL; pf = NULL; return false;
+    }
+    return true;
+}
+
+static bool lnkReadIcon(const std::wstring& lnk, std::wstring& icon, int& index) {
+    IShellLinkW* sl; IPersistFile* pf;
+    if (!lnkOpen(lnk, sl, pf)) return false;
+    wchar_t buf[MAX_PATH * 4] = {0};
+    int idx = 0;
+    bool ok = SUCCEEDED(sl->GetIconLocation(buf, MAX_PATH * 4, &idx));
+    pf->Release(); sl->Release();
+    if (ok) { icon = buf; index = idx; }
+    return ok;
+}
+
+static bool lnkWriteIcon(const std::wstring& lnk, const std::wstring& icon, int index) {
+    IShellLinkW* sl; IPersistFile* pf;
+    if (!lnkOpen(lnk, sl, pf)) return false;
+    bool ok = SUCCEEDED(sl->SetIconLocation(icon.c_str(), index));
+    if (ok) ok = SUCCEEDED(pf->Save(lnk.c_str(), TRUE));
+    pf->Release(); sl->Release();
+    return ok;
+}
+
+static void collectLnk(const std::wstring& dir, std::vector<std::wstring>& out, int depth = 0) {
+    if (depth > 8) return;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*.lnk").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) out.push_back(dir + L"\\" + fd.cFileName); }
+        while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                std::wstring n(fd.cFileName);
+                if (n == L"." || n == L"..") continue;
+                collectLnk(dir + L"\\" + n, out, depth + 1);
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+}
+
+static std::vector<std::wstring> defaultLnkDirs() {
+    std::vector<std::wstring> v;
+    wchar_t b[MAX_PATH];
+    auto add = [&](const std::wstring& d) {
+        if (!d.empty() && fileExists(d)) {
+            bool dup = false;
+            for (auto& x : v) if (lower(x) == lower(d)) dup = true;
+            if (!dup) v.push_back(d);
+        }
+    };
+    if (GetEnvironmentVariableW(L"USERPROFILE", b, MAX_PATH)) {
+        std::wstring u(b);
+        add(u + L"\\Desktop");
+        add(u + L"\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu");
+        add(u + L"\\AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch");
+        add(u + L"\\AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar");
+    }
+    if (GetEnvironmentVariableW(L"PUBLIC", b, MAX_PATH)) add(std::wstring(b) + L"\\Desktop");
+    else add(L"C:\\Users\\Public\\Desktop");
+    if (GetEnvironmentVariableW(L"ProgramData", b, MAX_PATH)) add(std::wstring(b) + L"\\Microsoft\\Windows\\Start Menu");
+    else add(L"C:\\ProgramData\\Microsoft\\Windows\\Start Menu");
+    return v;
+}
+
+static std::vector<std::wstring> scanLnks(const std::vector<std::wstring>& extra) {
+    std::vector<std::wstring> dirs = defaultLnkDirs();
+    for (auto& d : extra) dirs.push_back(d);
+    std::vector<std::wstring> lnks;
+    for (auto& d : dirs) collectLnk(d, lnks);
+    std::sort(lnks.begin(), lnks.end());
+    lnks.erase(std::unique(lnks.begin(), lnks.end()), lnks.end());
+    return lnks;
+}
+
+static bool saveLnkState(const std::vector<LnkEntry>& es) {
+    std::wstring c = L"GIRL1\n";
+    for (auto& e : es) c += e.path + L"\t" + e.oldIcon + L"\t" + W(e.oldIndex) + L"\n";
+    return writeTextUtf16(lnkStateFile(), c);
+}
+
+static bool loadLnkState(std::vector<LnkEntry>& es) {
+    std::wstring c;
+    if (!readTextUtf16(lnkStateFile(), c)) return false;
+    std::vector<std::wstring> lines = split(c, L'\n');
+    size_t i = 0;
+    while (i < lines.size() && lines[i].empty()) i++;
+    if (i >= lines.size()) return false;
+    std::wstring head = lines[i];
+    while (!head.empty() && head.back() == L'\r') head.pop_back();
+    if (head != L"GIRL1") return false;
+    for (++i; i < lines.size(); ++i) {
+        std::wstring ln = lines[i];
+        while (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+        if (ln.empty()) continue;
+        std::vector<std::wstring> f = split(ln, L'\t');
+        if (f.size() < 3) continue;
+        LnkEntry e;
+        e.path = f[0]; e.oldIcon = f[1]; e.oldIndex = _wtoi(f[2].c_str());
+        es.push_back(e);
+    }
+    return true;
+}
+
+// ------------------------------------------------------------ 缩略图开关
+//
+// .ico/.jpg/.png 这类图片类型, 系统会用缩略图处理器按图片自身内容显示,
+// 把 DefaultIcon 整个盖掉, 想让它们也统一显示图标就必须关掉缩略图。
+// 等价于在资源管理器里勾选"始终显示图标, 从不显示缩略图"。
+
+struct ThumbEntry {
+    std::wstring name;
+    bool hadOld = false;
+    DWORD oldValue = 0;
+};
+
+static const wchar_t* EXPLORER_ADV = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced";
+static std::wstring thumbStateFile() { return appDir() + L"\\applied_thumb.txt"; }
+
+static bool regGetDword(const std::wstring& sub, const wchar_t* name, DWORD& out) {
+    DWORD v = 0, sz = sizeof(v);
+    LONG r = RegGetValueW(HKEY_CURRENT_USER, sub.c_str(), name, RRF_RT_REG_DWORD, NULL, &v, &sz);
+    if (r != ERROR_SUCCESS) return false;
+    out = v;
+    return true;
+}
+
+static void thumbApply() {
+    const wchar_t* names[] = {L"IconsOnly", L"DisableThumbnails"};
+    std::wstring c = L"GIRT1\n";
+    for (auto n : names) {
+        ThumbEntry e; e.name = n;
+        e.hadOld = regGetDword(EXPLORER_ADV, n, e.oldValue);
+        HKEY h;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, EXPLORER_ADV, 0, NULL, 0, KEY_WRITE, NULL, &h, NULL) == ERROR_SUCCESS) {
+            DWORD one = 1;
+            RegSetValueExW(h, n, 0, REG_DWORD, (const BYTE*)&one, sizeof(one));
+            RegCloseKey(h);
+        }
+        c += e.name + L"\t" + W(e.hadOld ? 1 : 0) + L"\t" + W((int)e.oldValue) + L"\n";
+    }
+    writeTextUtf16(thumbStateFile(), c);
+}
+
+static void thumbRestore() {
+    std::wstring c;
+    if (!readTextUtf16(thumbStateFile(), c)) return;
+    std::vector<std::wstring> lines = split(c, L'\n');
+    size_t i = 0;
+    while (i < lines.size() && lines[i].empty()) i++;
+    if (i >= lines.size()) return;
+    std::wstring head = lines[i];
+    while (!head.empty() && head.back() == L'\r') head.pop_back();
+    if (head != L"GIRT1") return;
+    for (++i; i < lines.size(); ++i) {
+        std::wstring ln = lines[i];
+        while (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+        if (ln.empty()) continue;
+        std::vector<std::wstring> f = split(ln, L'\t');
+        if (f.size() < 3) continue;
+        std::wstring name = f[0];
+        bool hadOld = (f[1] == L"1");
+        DWORD oldValue = (DWORD)_wtoi(f[2].c_str());
+        HKEY h;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, EXPLORER_ADV, 0, KEY_SET_VALUE, &h) != ERROR_SUCCESS) continue;
+        if (hadOld) RegSetValueExW(h, name.c_str(), 0, REG_DWORD, (const BYTE*)&oldValue, sizeof(oldValue));
+        else RegDeleteValueW(h, name.c_str());
+        RegCloseKey(h);
+    }
+    DeleteFileW(thumbStateFile().c_str());
+}
+
 // ------------------------------------------------------------ 刷新
 
 static void refreshIcons(bool restartExplorer) {
@@ -470,8 +690,11 @@ struct Opts {
     bool noRestart = false;
     bool install = false;
     bool yes = false;
+    bool noLnk = false;          // 不改写快捷方式文件
+    bool keepThumbs = false;     // 保留缩略图
     int index = 0;
     std::set<std::wstring> exclude;
+    std::vector<std::wstring> lnkDirs;   // 额外扫描的快捷方式目录
 };
 
 static int cmdRestore(bool doRefresh, bool restart);
@@ -508,7 +731,12 @@ static int cmdApply(const std::wstring& srcArg, const Opts& o) {
         int ne = 0, no = 0;
         for (auto& t : targets) (t.kind == 0 ? ne : no)++;
         P(L"扩展名 " + W(ne) + L" 个, 关联类型 " + W(no) + L" 个");
+        if (!o.noLnk) {
+            std::vector<std::wstring> lnks = scanLnks(o.lnkDirs);
+            P(L"快捷方式 " + W((int)lnks.size()) + L" 个 (将逐个改写文件内的图标位置)");
+        }
         P(L"\n图标将引用: " + icon);
+        if (!o.keepThumbs) P(L"[计划] 同时关闭资源管理器缩略图 (否则图片按自身内容显示)");
         P(L"\n这是预览模式, 没有做任何修改。去掉 --dry-run 即可实际应用。");
         return 0;
     }
@@ -524,7 +752,9 @@ static int cmdApply(const std::wstring& srcArg, const Opts& o) {
     if (!o.yes) {
         P(L"\n即将把上述所有类型的图标统一替换为:");
         P(L"    " + icon);
-        P(L"\n说明: 只写当前用户的注册表, 不改任何文件内容;");
+        P(L"\n说明: 只写当前用户的注册表, 不改动文件内容;");
+        if (!o.noLnk) P(L"      例外: 快捷方式(.lnk)的图标存在文件内部, 会逐个改写, 原值已留档;");
+        if (!o.keepThumbs) P(L"      例外: 会关闭资源管理器缩略图, 否则图片类型按自身内容显示;");
         P(L"      随时可用 restore 完整还原。");
         std::wstring ans = readLine(L"\n确认应用? [y/N] ");
         std::wstring a = lower(ans);
@@ -552,10 +782,43 @@ static int cmdApply(const std::wstring& srcArg, const Opts& o) {
     P(L"\n[ok] 写入完成: 成功 " + W(done) + L", 失败 " + W(failed));
     P(L"[ok] 状态记录(用于还原): " + stateFile());
 
-    P(L"\n已知例外:");
-    P(L"  .lnk    快捷方式图标由目标文件决定, 通常无法覆盖");
-    P(L"  .ico    图标文件默认以自身内容显示");
-    P(L"  .exe    图标内嵌于文件, 部分视图下仍显示原图标");
+    // ---- .lnk: 图标写在文件内部, 注册表管不到, 只能逐个改写
+    if (!o.noLnk) {
+        hr(L"快捷方式 (.lnk)");
+        std::vector<std::wstring> lnks = scanLnks(o.lnkDirs);
+        P(L"扫描到 " + W((int)lnks.size()) + L" 个快捷方式");
+        if (!lnks.empty()) {
+            if (comReady()) {
+                std::vector<LnkEntry> les;
+                int ld = 0, lf = 0;
+                for (auto& f : lnks) {
+                    std::wstring oldIcon; int oldIdx = 0;
+                    if (!lnkReadIcon(f, oldIcon, oldIdx)) { lf++; continue; }
+                    if (lnkWriteIcon(f, icon, o.index)) {
+                        LnkEntry e; e.path = f; e.oldIcon = oldIcon; e.oldIndex = oldIdx;
+                        les.push_back(e); ld++;
+                    } else lf++;
+                }
+                if (!les.empty()) saveLnkState(les);
+                P(L"[ok] 已改写 " + W(ld) + L" 个快捷方式图标" +
+                  (lf ? std::wstring(L", 失败 ") + W(lf) : std::wstring(L"")));
+                P(L"[ok] 快捷方式还原记录: " + lnkStateFile());
+            } else {
+                P(L"[warn] COM 初始化失败, 跳过快捷方式");
+            }
+        }
+    }
+
+    // ---- 缩略图: 不关掉的话 .ico/.jpg/.png 会按图片自身内容显示
+    if (!o.keepThumbs) {
+        thumbApply();
+        P(L"[ok] 已关闭资源管理器缩略图 (图片/视频不再预览, 改用统一图标)");
+    }
+
+    P(L"\n三类硬骨头的处理:");
+    P(L"  .lnk    已逐个改写快捷方式文件内部的图标位置 (--no-lnk 可跳过)");
+    P(L"  .ico    已写入 DefaultIcon 并关闭缩略图 (--keep-thumbnails 可保留预览)");
+    P(L"  .exe    已写入 exefile 的 DefaultIcon; 个别视图下 shell 仍直接提取原图标");
 
     if (!o.noRefresh) refreshIcons(!o.noRestart);
     else P(L"\n[info] 已跳过刷新, 手动重启资源管理器后生效。");
@@ -588,6 +851,25 @@ static int cmdRestore(bool doRefresh, bool restart) {
     DeleteFileW(installedIcon().c_str());
     P(L"\n[ok] 已还原 " + W(ok) + L" 项, 状态记录已清除");
 
+    // 快捷方式: 把改写过的图标位置写回去
+    std::vector<LnkEntry> les;
+    if (loadLnkState(les)) {
+        int lk = 0;
+        if (comReady()) {
+            for (auto& e : les) if (lnkWriteIcon(e.path, e.oldIcon, e.oldIndex)) lk++;
+            P(L"[ok] 已还原 " + W(lk) + L"/" + W((int)les.size()) + L" 个快捷方式图标");
+        } else {
+            P(L"[warn] COM 初始化失败, 快捷方式未能还原");
+        }
+        DeleteFileW(lnkStateFile().c_str());
+    }
+
+    // 缩略图设置
+    if (fileExists(thumbStateFile())) {
+        thumbRestore();
+        P(L"[ok] 缩略图设置已恢复");
+    }
+
     if (doRefresh) refreshIcons(restart);
     hr(L"完成");
     P(L"系统图标已恢复原状。");
@@ -608,6 +890,53 @@ static int cmdStatus() {
     }
     P(L"状态目录: " + appDir());
     return 0;
+}
+
+// 自检: 让 .lnk 改写能力可被验证。
+// 对每个快捷方式做一遍 "读原值 -> 写入 -> 读回 -> 还原 -> 复验",
+// 全程不碰注册表, 结束时快捷方式回到原样。
+static int cmdLnkTest(const std::wstring& icon, const std::vector<std::wstring>& dirs) {
+    hr(L"快捷方式 (.lnk) 改写自检");
+    std::vector<std::wstring> lnks;
+    for (auto& d : dirs) collectLnk(d, lnks);
+    std::sort(lnks.begin(), lnks.end());
+    lnks.erase(std::unique(lnks.begin(), lnks.end()), lnks.end());
+    if (lnks.empty()) { P(L"[info] 指定目录里没有 .lnk 文件"); return 1; }
+    if (!comReady()) { P(L"[错误] COM 初始化失败"); return 2; }
+
+    P(L"图标:   " + icon);
+    P(L"样本:   " + W((int)lnks.size()) + L" 个快捷方式");
+    P(L"过程:   读原值 -> 写入 -> 读回 -> 还原 -> 复验");
+    P(L"");
+
+    int pass = 0, fail = 0;
+    for (auto& f : lnks) {
+        std::wstring oldIcon; int oldIdx = 0;
+        if (!lnkReadIcon(f, oldIcon, oldIdx)) { fail++; if (fail <= 5) P(L"[warn] 读不出原图标: " + f); continue; }
+
+        bool ok = lnkWriteIcon(f, icon, 0);
+        std::wstring nowIcon; int nowIdx = 0;
+        if (ok) {
+            lnkReadIcon(f, nowIcon, nowIdx);
+            if (lower(nowIcon) != lower(icon)) ok = false;
+        }
+
+        // 无论如何都尝试还原
+        lnkWriteIcon(f, oldIcon, oldIdx);
+        std::wstring backIcon; int backIdx = 0;
+        lnkReadIcon(f, backIcon, backIdx);
+        if (lower(backIcon) != lower(oldIcon) || backIdx != oldIdx) ok = false;
+
+        if (ok) pass++;
+        else { fail++; if (fail <= 5) P(L"[warn] 未通过: " + f); }
+    }
+
+    hr();
+    P(L"通过 " + W(pass) + L" 个, 未通过 " + W(fail) + L" 个 (共 " + W((int)lnks.size()) + L" 个)");
+    P(L"所有快捷方式已还原为原图标, 注册表未做任何改动。");
+    if (fail == 0) P(L"\n[ok] .lnk 改写能力正常。");
+    else P(L"\n[warn] 有快捷方式未能改写, 通常是文件只读或正在被占用。");
+    return fail == 0 ? 0 : 1;
 }
 
 static int cmdList(const Opts& o) {
@@ -635,6 +964,7 @@ static void usage() {
     P(L"  IconReplacer.exe restore         还原为系统原始图标");
     P(L"  IconReplacer.exe status          查看当前状态");
     P(L"  IconReplacer.exe list            列出将被修改的类型");
+    P(L"  IconReplacer.exe lnktest <ico>   自检快捷方式能否改写 (改完立即还原)");
     P(L"");
     P(L"选项:");
     P(L"  --dry-run           只统计不写入");
@@ -646,7 +976,14 @@ static void usage() {
     P(L"  --exclude .a .b     排除指定扩展名");
     P(L"  --yes               跳过确认");
     P(L"");
-    P(L"说明: 只写当前用户的注册表 (HKCU), 不需要管理员权限, 不改动文件内容。");
+    P(L"快捷方式与缩略图:");
+    P(L"  --no-lnk            不改写快捷方式 (.lnk) 文件");
+    P(L"  --lnk-dir <目录>    额外扫描该目录下的快捷方式, 可重复写");
+    P(L"  --keep-thumbnails   不关闭缩略图 (图片仍按自身内容显示)");
+    P(L"");
+    P(L"说明: 只写当前用户的注册表 (HKCU), 不需要管理员权限。");
+    P(L"      默认会改写快捷方式图标、关闭缩略图, 这样 .lnk/.ico 也能统一;");
+    P(L"      两者的原值都会留档, restore 时一并还原。");
 }
 
 static int menu() {
@@ -665,6 +1002,8 @@ static int menu() {
             Opts o;
             std::wstring y = readLine(L"同时替换文件夹和驱动器图标? [Y/n] ");
             if (!y.empty() && (y[0] == L'n' || y[0] == L'N')) o.noFolders = true;
+            std::wstring l = readLine(L"同时改写桌面/开始菜单的快捷方式图标? [Y/n] ");
+            if (!l.empty() && (l[0] == L'n' || l[0] == L'N')) o.noLnk = true;
             cmdApply(p, o);
         } else if (c == L"2") {
             cmdRestore(true, true);
@@ -713,6 +1052,17 @@ int main() {
         }
         return cmdRestore(!nr, !nrs);
     }
+    if (cmd == L"lnktest") {
+        std::wstring icon;
+        std::vector<std::wstring> dirs;
+        for (int i = 2; i < argc; ++i) {
+            if (av[i] == L"--lnk-dir" && i + 1 < argc) dirs.push_back(toAbs(av[++i]));
+            else if (icon.empty()) icon = toAbs(av[i]);
+        }
+        if (icon.empty()) { P(L"[错误] 用法: IconReplacer.exe lnktest <icon.ico> [--lnk-dir <目录>]"); return 2; }
+        if (dirs.empty()) dirs = defaultLnkDirs();
+        return cmdLnkTest(icon, dirs);
+    }
     if (cmd == L"list" || cmd == L"list-types") {
         Opts o;
         for (int i = 2; i < argc; ++i) if (av[i] == L"--no-folders") o.noFolders = true;
@@ -734,6 +1084,9 @@ int main() {
             else if (a == L"--install") o.install = true;
             else if (a == L"--yes" || a == L"-y") o.yes = true;
             else if (a == L"--index" && i + 1 < argc) o.index = _wtoi(av[++i].c_str());
+            else if (a == L"--no-lnk") o.noLnk = true;
+            else if (a == L"--keep-thumbnails") o.keepThumbs = true;
+            else if (a == L"--lnk-dir" && i + 1 < argc) o.lnkDirs.push_back(toAbs(av[++i]));
             else if (a == L"--exclude") {
                 while (i + 1 < argc && av[i + 1][0] != L'-') o.exclude.insert(lower(av[++i]));
             } else if (icon.empty()) icon = a;

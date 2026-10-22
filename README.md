@@ -16,8 +16,16 @@ Windows 里文件的图标并不保存在文件自身，而是由注册表中的
 
 - **不需要管理员权限**
 - **不改动系统原有配置**（HKLM 一个字都没碰）
-- **不改动、不读取、不移动你的任何文件**
+- **不改动、不读取、不移动你的任何文件**（快捷方式 `.lnk` 除外，见下）
 - **随时可完整还原**
+
+连三类原本改不动的「硬骨头」也能统一：
+
+| 类型 | 难点 | 现在的做法 |
+|---|---|---|
+| `.lnk` 快捷方式 | 图标写在每个 `.lnk` 文件内部，注册表的 `DefaultIcon` 管不到 | 逐个用 `IShellLink::SetIconLocation` 改写文件本身，原值留档用于还原 |
+| `.ico` 等图片 | 系统用缩略图处理器按图片自身内容显示，把图标盖掉 | 除写 `DefaultIcon` 外，关闭资源管理器缩略图（`IconsOnly`） |
+| `.exe` | shell 直接从文件资源提取图标 | 写入 `exefile` 的 `DefaultIcon`，尽力而为 |
 
 ---
 
@@ -44,6 +52,7 @@ IconReplacer.exe apply   D:\my.ico      :: 应用图标
 IconReplacer.exe restore                 :: 还原为系统原始图标
 IconReplacer.exe status                  :: 查看当前状态
 IconReplacer.exe list                    :: 列出将被修改的类型
+IconReplacer.exe lnktest <ico>           :: 自检快捷方式能否改写（改完立即还原）
 IconReplacer.exe help                    :: 帮助
 ```
 
@@ -59,6 +68,21 @@ IconReplacer.exe help                    :: 帮助
 | `--index N` | 用 `.ico` 里的第 N 个图像，默认 0 |
 | `--exclude .lnk` | 排除某个扩展名，可写多个 |
 | `--yes` | 跳过确认，直接执行 |
+| `--no-lnk` | 不改写快捷方式（`.lnk`）文件 |
+| `--lnk-dir <目录>` | 额外扫描该目录下的快捷方式，可重复写 |
+| `--keep-thumbnails` | 不关闭缩略图（图片仍按自身内容显示） |
+
+### 快捷方式扫描范围
+
+默认扫：桌面、公共桌面、开始菜单、快速启动、任务栏固定（User Pinned\TaskBar）。
+其它目录用 `--lnk-dir` 追加。每个被改写的快捷方式，其原始图标位置都记在
+`%LOCALAPPDATA%\GlobalIconReplacer\applied_lnk.txt`，`restore` 时逐个写回。
+
+不确定能不能改？先跑自检——它把每个快捷方式「改一次再还原」，不动注册表：
+
+```bat
+IconReplacer.exe lnktest OIP-C_256x256.ico
+```
 
 ---
 
@@ -85,21 +109,29 @@ IconReplacer.exe help                    :: 帮助
 
 ---
 
-## 已知例外（不是 bug）
+## 三类硬骨头的处理细节
 
-- `.lnk` 快捷方式的图标由它指向的目标决定，通常覆盖不了
-- `.ico` 图标文件默认按自身内容显示
-- `.exe` 图标内嵌在程序里，部分视图下仍显示原图标
-- 任务栏 / 开始菜单 / 桌面快捷方式属于 `.lnk`，不受影响
-- 改完后需要重启资源管理器才会立刻生效，程序默认会自动做这一步
-  （会关闭你已打开的所有文件夹窗口，不影响文件）
+**`.lnk`** —— 图标存在快捷方式文件内部，注册表管不到，所以只能逐个改写文件本身
+（`IShellLink::SetIconLocation`）。原值留档，`restore` 写回。
+若某个快捷方式只读或正被占用会跳过，状态里能看到失败数。
+
+**`.ico`** —— 系统会用缩略图处理器按图片内容显示，把 `DefaultIcon` 盖掉，
+所以顺手关掉缩略图（等于勾选「始终显示图标，从不显示缩略图」）。
+代价：图片/视频不再预览。想保留预览就加 `--keep-thumbnails`。
+
+**`.exe`** —— 已写入 `exefile` 的 `DefaultIcon`。shell 在部分视图下仍直接从文件资源
+提取原图标，这是系统行为，注册表层面到此为止。
+
+另外：任务栏 / 开始菜单 / 桌面快捷方式属于 `.lnk`，现在同样会被改写；
+改完后需要重启资源管理器才立刻生效，程序默认自动做（会关掉已打开的文件夹窗口，不影响文件）。
 
 ---
 
 ## 卸载
 
 先运行一次 `restore` 还原图标，然后把整个文件夹删掉即可。
-无残留：注册表里只有 `HKCU\Software\Classes` 下本程序写入的 `DefaultIcon` 项，`restore` 会全部清除。
+无残留：`HKCU\Software\Classes` 下写入的 `DefaultIcon`、`Explorer\Advanced` 下的缩略图开关、
+以及改写过的快捷方式，`restore` 会全部清除或还原。
 
 ---
 

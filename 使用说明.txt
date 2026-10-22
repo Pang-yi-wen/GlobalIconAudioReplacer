@@ -12,7 +12,7 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
 用户级注册优先于系统级，所以：
   · 不需要管理员权限
   · 不改动系统原有配置（HKLM 一个字都没碰）
-  · 不改动、不读取、不移动你的任何文件
+  · 不改动、不读取、不移动你的任何文件（快捷方式 .lnk 除外，见第五节）
   · 随时可完整还原
 
 
@@ -34,6 +34,7 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
     IconReplacer.exe restore                 还原
     IconReplacer.exe status                  查看状态
     IconReplacer.exe list                    列出将被改的类型
+    IconReplacer.exe lnktest <ico>           自检快捷方式能否改写（改完立即还原）
     IconReplacer.exe help                    帮助
 
     可选开关：
@@ -45,6 +46,11 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
       --index N        用 .ico 里的第 N 个图像，默认 0
       --exclude .lnk   排除某个扩展名，可写多个
       --yes            跳过确认，直接执行
+
+    快捷方式与缩略图：
+      --no-lnk             不改写快捷方式（.lnk）文件
+      --lnk-dir <目录>      额外扫描该目录下的快捷方式，可重复写
+      --keep-thumbnails    不关闭缩略图（图片仍按自身内容显示）
 
 
 三、图标从哪来
@@ -63,14 +69,33 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
       之后会重启资源管理器，图标立刻回到系统原始状态。
 
 
-五、已知例外（不是 bug）
+五、三类「硬骨头」现在怎么处理
 ------------------------------------------------
-.lnk   快捷方式的图标由它指向的目标决定，通常覆盖不了
-.ico   图标文件默认按自身内容显示
-.exe   图标内嵌在程序里，部分视图下仍显示原图标
-任务栏/开始菜单/桌面快捷方式  属于 .lnk，不受影响
-改完后需要重启资源管理器才会立刻生效，程序默认会自动做这一步
-（会关闭你已打开的所有文件夹窗口，不影响文件）
+.lnk
+    图标写在每个快捷方式文件的内部，注册表的 DefaultIcon 管不到它。
+    所以现在会逐个改写快捷方式文件里的图标位置（IShellLink），
+    默认扫描这些地方：桌面 / 公共桌面 / 开始菜单 / 快速启动 / 任务栏固定。
+    每个快捷方式原来的图标位置都会记下来，restore 时逐个写回。
+      不想动快捷方式：加 --no-lnk
+      还要扫别的目录：--lnk-dir <目录>（可重复写）
+      想先验证能不能改：IconReplacer.exe lnktest OIP-C_256x256.ico
+      （自检会「改一次再还原」，改完立刻恢复原样，不动注册表）
+
+.ico
+    系统会用缩略图处理器按图片自身内容显示，把图标整个盖掉。
+    所以现在除了写 DefaultIcon，还会顺手关掉资源管理器的缩略图
+    （等同于勾选「始终显示图标，从不显示缩略图」）。
+    代价是图片和视频不再预览。想保留预览：加 --keep-thumbnails
+
+.exe
+    已写入 exefile 的 DefaultIcon，尽力而为。
+    shell 在部分视图下仍会直接从 exe 资源里提取原图标，这是系统行为，
+    注册表层面到此为止，改不了。
+
+其它
+    任务栏 / 开始菜单 / 桌面快捷方式属于 .lnk，现在也会被改写
+    改完后需要重启资源管理器才会立刻生效，程序默认会自动做这一步
+    （会关闭你已打开的所有文件夹窗口，不影响文件）
 
 
 六、装在别的电脑上
@@ -81,8 +106,10 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
       想彻底避免路径失效，加 --install 参数。
 
 每台电脑的还原记录各自保存在
-  C:\Users\<用户名>\AppData\Local\GlobalIconReplacer\applied.txt
-删掉这个文件不代表不能还原，但会失去精确还原的能力。
+  C:\Users\<用户名>\AppData\Local\GlobalIconReplacer\applied.txt       注册表改动
+  C:\Users\<用户名>\AppData\Local\GlobalIconReplacer\applied_lnk.txt    快捷方式原图标
+  C:\Users\<用户名>\AppData\Local\GlobalIconReplacer\applied_thumb.txt  缩略图原设置
+删掉这些文件不代表不能还原，但会失去精确还原的能力。
 
 中文路径：完全支持。程序全程用 Unicode（宽字符）读写注册表和文件，
 控制台的输入输出也不经过 cmd 的代码页，所以中文用户名、中文文件夹名、
@@ -106,4 +133,5 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
 ------------------------------------------------
 先运行一次 restore 还原图标，然后把这个文件夹整个删掉即可。
 无残留：注册表里只有 HKCU\Software\Classes 下本程序写入的
-DefaultIcon 项，restore 会全部清除。
+DefaultIcon 项，加上 Explorer\Advanced 下的缩略图开关，
+restore 会全部清除或恢复原值。
