@@ -19,6 +19,7 @@ IconReplacer.exe restore               :: 还原
 IconReplacer.exe status                :: 当前状态
 IconReplacer.exe list                  :: 列出将被修改的类型
 IconReplacer.exe lnktest <icon.ico>    :: 自检快捷方式能否改写（改完立即还原）
+IconReplacer.exe lnkstrip <某个.lnk>   :: 自检单个快捷方式的图标位置
 ```
 
 双击 exe 进交互菜单；把 `.ico` 拖到 exe 上直接应用；双击 `一键恢复.bat` 直接还原。
@@ -39,9 +40,15 @@ IconReplacer.exe lnktest <icon.ico>    :: 自检快捷方式能否改写（改�
 ## 覆盖情况
 
 - **常规类型**：写入 `DefaultIcon`，覆盖上千种扩展名与关联类型。
+- **桌面系统图标**：此电脑、回收站、用户文件夹、网络、控制面板、库不属于文件关联，
+  单独写 `Explorer\CLSID\{GUID}\DefaultIcon`，同样只碰 `HKCU`。
 - **`.lnk`**：图标存在每个快捷方式文件内部，注册表管不到，改为逐个改写文件本身
   （`IShellLink::SetIconLocation`），原值留档。默认扫桌面、公共桌面、开始菜单、快速启动、
-  任务栏固定；文件只读或被占用时会跳过。
+  任务栏固定。
+  写完后会摘掉 shell 自动塞进来的 `IconEnvironmentDataBlock`——那个块把路径折算成
+  `%SystemDrive%/...` 另存一份，ANSI 字段只有 260 字节，路径一长或代码页表示不了就断，
+  图标随即退回原样，是"明明改了却没变"的主要来源。
+  只读或占用的文件先清只读再写，写完恢复属性；改不动的会连原因一起列出来。
 - **`.ico` 等图片**：系统按图片自身内容显示缩略图，会盖掉 `DefaultIcon`，因此同时关闭缩略图。
   想保留预览用 `--keep-thumbnails`。
 - **`.exe`**：写入 `exefile` 的 `DefaultIcon`。shell 在部分视图下仍直接从文件提取原图标，
@@ -49,8 +56,9 @@ IconReplacer.exe lnktest <icon.ico>    :: 自检快捷方式能否改写（改�
 
 ## 还原
 
-`restore` 还原三样：注册表 `DefaultIcon`、快捷方式的原图标、缩略图的原设置，随后重启资源管理器。
-每次 `apply` 会在程序目录 `_restore\` 留一份还原记录副本，`%LOCALAPPDATA%` 下那份丢失时自动取回。
+`restore` 还原四样：注册表 `DefaultIcon`（含系统图标）、快捷方式的原图标、缩略图的原设置，
+随后重启资源管理器。每次 `apply` 会在程序目录 `_restore\` 留一份还原记录副本，
+`%LOCALAPPDATA%` 下那份丢失时自动取回。
 
 ## 编译
 
