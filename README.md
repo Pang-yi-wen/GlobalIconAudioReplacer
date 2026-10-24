@@ -1,4 +1,4 @@
-# 全局图标替换工具
+# 全局图标 + 音频替换工具
 
 统一 Windows 的图标与提示音：把全部文件类型的图标换成同一个 `.ico`，把全部系统音效换成同一个
 WAV，两者都可完整还原。单文件 C++ 实现，只写 `HKCU`，无需管理员权限。
@@ -18,14 +18,14 @@ WAV，两者都可完整还原。单文件 C++ 实现，只写 `HKCU`，无需�
 ## 用法
 
 ```bat
-IconReplacer.exe apply   <icon.ico>    :: 应用图标
-IconReplacer.exe restore               :: 还原
-IconReplacer.exe status                :: 当前状态
-IconReplacer.exe list                  :: 列出将被修改的类型
-IconReplacer.exe lnktest <icon.ico>    :: 自检快捷方式能否改写（改完立即还原）
-IconReplacer.exe lnkstrip <某个.lnk>   :: 自检单个快捷方式的图标位置
-IconReplacer.exe sound   <sound.wav>   :: 把所有系统音效换成这个 WAV
-IconReplacer.exe soundoff              :: 只还原系统音效
+IconAudioReplacer.exe apply   <icon.ico>    :: 应用图标
+IconAudioReplacer.exe restore               :: 还原
+IconAudioReplacer.exe status                :: 当前状态
+IconAudioReplacer.exe list                  :: 列出将被修改的类型
+IconAudioReplacer.exe lnktest <icon.ico>    :: 自检快捷方式能否改写（改完立即还原）
+IconAudioReplacer.exe lnkstrip <某个.lnk>   :: 自检单个快捷方式的图标位置
+IconAudioReplacer.exe sound   <sound.wav>   :: 把所有系统音效换成这个 WAV
+IconAudioReplacer.exe soundoff              :: 只还原系统音效
 ```
 
 双击 exe 进交互菜单；把 `.ico` 或 `.wav` 拖到 exe 上直接应用；双击 `一键恢复.bat` 直接还原。
@@ -76,14 +76,14 @@ IconReplacer.exe soundoff              :: 只还原系统音效
 
 ```bat
 g++ -O2 -std=c++17 -s -static -static-libgcc -static-libstdc++ ^
-  -o IconReplacer.exe icon_replacer.cpp -ladvapi32 -lshell32 -lole32 -lwinmm
+  -o IconAudioReplacer.exe icon_replacer.cpp -ladvapi32 -lshell32 -lole32 -lwinmm
 ```
 
 ## 文件
 
 | 文件 | 说明 |
 |---|---|
-| `IconReplacer.exe` | 主程序，静态单文件，64 位 Windows 7 及以上 |
+| `IconAudioReplacer.exe` | 主程序，静态单文件，64 位 Windows 7 及以上 |
 | `icon_replacer.cpp` | 源码，单文件，无第三方库 |
 | `OIP-C_256x256.ico` | 示例图标（蒋结实） |
 | `一键恢复.bat` | 双击还原 |

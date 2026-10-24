@@ -1,4 +1,4 @@
-全局图标替换工具 · 使用说明
+全局图标 + 音频替换工具 · 使用说明
 ================================================
 
 一、它做什么
@@ -18,7 +18,7 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
 
 二、怎么用（三种方式，任选）
 ------------------------------------------------
-方式 A：双击 IconReplacer.exe
+方式 A：双击 IconAudioReplacer.exe
     出现菜单：
       1 应用图标 → 输入 .ico 路径（也可以把图标文件直接拖进黑窗口）
       2 还原为系统原始图标
@@ -27,19 +27,19 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
       5 替换系统音效（把所有提示音换成同一个 WAV）
       0 退出
 
-方式 B：把 .ico（或 .wav）文件拖到 IconReplacer.exe 的图标上
+方式 B：把 .ico（或 .wav）文件拖到 IconAudioReplacer.exe 的图标上
     松手即应用，最省事。拖 .ico 换图标，拖 .wav 换音效。
 
 方式 C：命令行（cmd 或 PowerShell 里）
-    IconReplacer.exe apply D:\my.ico         应用
-    IconReplacer.exe restore                 还原
-    IconReplacer.exe status                  查看状态
-    IconReplacer.exe list                    列出将被改的类型
-    IconReplacer.exe lnktest <ico>           自检快捷方式能否改写（改完立即还原）
-    IconReplacer.exe lnkstrip <lnk>          自检单个快捷方式的图标位置
-    IconReplacer.exe sound D:\my.wav         替换全部系统音效
-    IconReplacer.exe soundoff                只还原系统音效
-    IconReplacer.exe help                    帮助
+    IconAudioReplacer.exe apply D:\my.ico         应用
+    IconAudioReplacer.exe restore                 还原
+    IconAudioReplacer.exe status                  查看状态
+    IconAudioReplacer.exe list                    列出将被改的类型
+    IconAudioReplacer.exe lnktest <ico>           自检快捷方式能否改写（改完立即还原）
+    IconAudioReplacer.exe lnkstrip <lnk>          自检单个快捷方式的图标位置
+    IconAudioReplacer.exe sound D:\my.wav         替换全部系统音效
+    IconAudioReplacer.exe soundoff                只还原系统音效
+    IconAudioReplacer.exe help                    帮助
 
     可选开关：
       --dry-run        只统计不写入，先看看会改多少项
@@ -71,8 +71,8 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
 换：再运行一次 apply 指向新图标即可（会自动先还原旧的）。
 恢复：三种都行，效果完全一样——
       1. 双击「一键恢复.bat」（最省事）
-      2. 双击 IconReplacer.exe 后菜单选 2
-      3. 命令行 IconReplacer.exe restore
+      2. 双击 IconAudioReplacer.exe 后菜单选 2
+      3. 命令行 IconAudioReplacer.exe restore
       之后会重启资源管理器，图标立刻回到系统原始状态。
 
 restore 一次会还原三样东西：
@@ -95,10 +95,10 @@ restore 一次会还原三样东西：
     每个快捷方式原来的图标位置都会记下来，restore 时逐个写回。
       不想动快捷方式：加 --no-lnk
       还要扫别的目录：--lnk-dir <目录>（可重复写）
-      想先验证能不能改：IconReplacer.exe lnktest OIP-C_256x256.ico
+      想先验证能不能改：IconAudioReplacer.exe lnktest OIP-C_256x256.ico
       （自检会「改一次再还原」，改完立刻恢复原样，不动注册表）
       某个快捷方式怎么都换不掉：
-          IconReplacer.exe lnkstrip "C:\完整\路径\某某.lnk"
+          IconAudioReplacer.exe lnkstrip "C:\完整\路径\某某.lnk"
           它会把文件里那份环境变量图标记录摘掉并报告结构是否完好，
           摘掉之后再重新 apply 一次即可。只动这一个文件，不碰注册表。
     只读的文件会先清掉只读属性再写，写完恢复；实在写不进的，
@@ -126,7 +126,7 @@ restore 一次会还原三样东西：
     （会关闭你已打开的所有文件夹窗口，不影响文件）
 
 系统音效（不属于图标，单独一条路）
-    IconReplacer.exe sound D:\my.wav
+    IconAudioReplacer.exe sound D:\my.wav
     把注册表里 80 多个「程序 + 事件」的音效全部指向这个文件，
     包括提示音、错误音、通知音，以及资源管理器和各软件自己的事件音。
     改完会自动试听一次，确认文件真的能播。
@@ -136,22 +136,22 @@ restore 一次会还原三样东西：
     要转格式：格式工厂、ffmpeg（ffmpeg -i a.mp3 -acodec pcm_s16le a.wav），
     或在任意在线转换站点转成 WAV。
 
-    还原：IconReplacer.exe soundoff
+    还原：IconAudioReplacer.exe soundoff
     或者直接用 restore，会连图标一起还原。
     有些程序把声音缓存在自己进程里，改完要重启那个程序才听得到变化。
 
 
 六、装在别的电脑上
 ------------------------------------------------
-整个文件夹拷到 U 盘或目标电脑桌面即可，IconReplacer.exe 是静态编译的
+整个文件夹拷到 U 盘或目标电脑桌面即可，IconAudioReplacer.exe 是静态编译的
 单文件，不依赖任何运行环境，64 位 Windows 7 及以上都能跑。
 注意：图标文件用的是你给的路径，所以图标也要一起拷过去；
       想彻底避免路径失效，加 --install 参数。
 
 每台电脑的还原记录各自保存在
-  C:\Users\<用户名>\AppData\Local\GlobalIconReplacer\applied.txt       注册表改动
-  C:\Users\<用户名>\AppData\Local\GlobalIconReplacer\applied_lnk.txt    快捷方式原图标
-  C:\Users\<用户名>\AppData\Local\GlobalIconReplacer\applied_thumb.txt  缩略图原设置
+  C:\Users\<用户名>\AppData\Local\GlobalIconAudioReplacer\applied.txt       注册表改动
+  C:\Users\<用户名>\AppData\Local\GlobalIconAudioReplacer\applied_lnk.txt    快捷方式原图标
+  C:\Users\<用户名>\AppData\Local\GlobalIconAudioReplacer\applied_thumb.txt  缩略图原设置
 删掉这些文件不代表不能还原，但会失去精确还原的能力。
 
 中文路径：完全支持。程序全程用 Unicode（宽字符）读写注册表和文件，
@@ -166,7 +166,7 @@ restore 一次会还原三样东西：
 
   "C:\Program Files (x86)\Embarcadero\Dev-Cpp\TDM-GCC-64\bin\g++.exe" ^
     -O2 -std=c++17 -s -static -static-libgcc -static-libstdc++ ^
-    -o IconReplacer.exe icon_replacer.cpp -ladvapi32 -lshell32 -lole32
+    -o IconAudioReplacer.exe icon_replacer.cpp -ladvapi32 -lshell32 -lole32
 
 （^ 是 cmd 里的换行符；用 PowerShell 的话换成 ` 反引号）
 也可以在 Dev-C++ 里新建工程、把 .cpp 加进去直接编译。

@@ -3,7 +3,7 @@ chcp 936 >nul
 cd /d "%~dp0"
 
 echo.
-echo   Global Icon Replacer - restore
+echo   Global Icon + Audio Replacer - restore
 echo   ----------------------------------------
 echo   This will restore ALL of the following:
 echo     - file type icons in the registry
@@ -14,7 +14,7 @@ echo   ----------------------------------------
 echo.
 pause
 
-IconReplacer.exe restore
+IconAudioReplacer.exe restore
 
 echo.
 echo   === restore finished ===

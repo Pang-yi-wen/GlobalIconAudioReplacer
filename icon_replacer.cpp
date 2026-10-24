@@ -1,9 +1,9 @@
-// 全局图标替换工具 (Global Icon Replacer) — C++ 单文件版
+// 全局图标 + 音频替换工具 (Global Icon + Audio Replacer) — C++ 单文件版
 //
 // 自带的图标示例为蒋结实（即仓库内附带的 OIP-C_256x256.ico，可直接拿来试用）。
 //
 // 编译: g++ -O2 -std=c++17 -s -static -static-libgcc -static-libstdc++ ^
-//         -o IconReplacer.exe icon_replacer.cpp -ladvapi32 -lshell32 -lole32 -lwinmm
+//         -o IconAudioReplacer.exe icon_replacer.cpp -ladvapi32 -lshell32 -lole32 -lwinmm
 //
 // 原理: Windows 的文件图标不由文件决定, 而由注册表中的"文件类型关联"决定。
 //       本程序在 HKCU\Software\Classes 下为每种类型写入 DefaultIcon,
@@ -23,12 +23,12 @@
 //       状态文件以 UTF-16LE 存储, 不做任何编码往返。
 //
 // 用法:
-//   IconReplacer.exe                  无参数 -> 交互菜单
-//   IconReplacer.exe <icon.ico>       把 .ico 拖到 exe 上 -> 直接应用
-//   IconReplacer.exe apply <ico> [选项]
-//   IconReplacer.exe restore [--no-refresh]
-//   IconReplacer.exe status
-//   IconReplacer.exe list
+//   IconAudioReplacer.exe                  无参数 -> 交互菜单
+//   IconAudioReplacer.exe <icon.ico>       把 .ico 拖到 exe 上 -> 直接应用
+//   IconAudioReplacer.exe apply <ico> [选项]
+//   IconAudioReplacer.exe restore [--no-refresh]
+//   IconAudioReplacer.exe status
+//   IconAudioReplacer.exe list
 //
 // 选项:
 //   --dry-run              只统计不写入
@@ -58,7 +58,7 @@
 #include <algorithm>
 
 static const wchar_t* HKCU_CLASSES = L"Software\\Classes";
-static const wchar_t* APP_NAME     = L"GlobalIconReplacer";
+static const wchar_t* APP_NAME     = L"GlobalIconAudioReplacer";
 
 // ------------------------------------------------------------ 系统图标
 //
@@ -1641,18 +1641,18 @@ static int cmdList(const Opts& o) {
 }
 
 static void usage() {
-    hr(L"全局图标替换工具");
+    hr(L"全局图标 + 音频替换工具");
     P(L"用法:");
-    P(L"  IconReplacer.exe                 打开交互菜单");
-    P(L"  IconReplacer.exe <icon.ico>      把 .ico 拖到 exe 上, 直接应用");
-    P(L"  IconReplacer.exe apply <ico>     应用图标");
-    P(L"  IconReplacer.exe restore         还原为系统原始图标");
-    P(L"  IconReplacer.exe status          查看当前状态");
-    P(L"  IconReplacer.exe list            列出将被修改的类型");
-    P(L"  IconReplacer.exe lnktest <ico>   自检快捷方式能否改写 (改完立即还原)");
-    P(L"  IconReplacer.exe lnkstrip <lnk>  自检单个快捷方式的图标位置能否被正常解析");
-    P(L"  IconReplacer.exe sound <wav>     把所有系统音效换成这个 WAV");
-    P(L"  IconReplacer.exe soundoff        只还原系统音效");
+    P(L"  IconAudioReplacer.exe                 打开交互菜单");
+    P(L"  IconAudioReplacer.exe <icon.ico>      把 .ico 拖到 exe 上, 直接应用");
+    P(L"  IconAudioReplacer.exe apply <ico>     应用图标");
+    P(L"  IconAudioReplacer.exe restore         还原为系统原始图标");
+    P(L"  IconAudioReplacer.exe status          查看当前状态");
+    P(L"  IconAudioReplacer.exe list            列出将被修改的类型");
+    P(L"  IconAudioReplacer.exe lnktest <ico>   自检快捷方式能否改写 (改完立即还原)");
+    P(L"  IconAudioReplacer.exe lnkstrip <lnk>  自检单个快捷方式的图标位置能否被正常解析");
+    P(L"  IconAudioReplacer.exe sound <wav>     把所有系统音效换成这个 WAV");
+    P(L"  IconAudioReplacer.exe soundoff        只还原系统音效");
     P(L"");
     P(L"选项:");
     P(L"  --dry-run           只统计不写入");
@@ -1676,7 +1676,7 @@ static void usage() {
 
 static int menu() {
     for (;;) {
-        hr(L"全局图标替换工具");
+        hr(L"全局图标 + 音频替换工具");
         P(L"  1  应用图标 (把电脑上所有文件类型换成同一个 .ico)");
         P(L"  2  还原为系统原始图标");
         P(L"  3  查看当前状态");
@@ -1751,14 +1751,14 @@ int main() {
         return cmdRestore(!nr, !nrs);
     }
     if (cmd == L"sound") {
-        if (argc < 3) { P(L"[错误] 用法: IconReplacer.exe sound <声音.wav>"); return 2; }
+        if (argc < 3) { P(L"[错误] 用法: IconAudioReplacer.exe sound <声音.wav>"); return 2; }
         return cmdSound(av[2]);
     }
     if (cmd == L"soundoff") {
         return cmdSoundOff();
     }
     if (cmd == L"lnkstrip") {
-        if (argc < 3) { P(L"[错误] 用法: IconReplacer.exe lnkstrip <某个.lnk>"); return 2; }
+        if (argc < 3) { P(L"[错误] 用法: IconAudioReplacer.exe lnkstrip <某个.lnk>"); return 2; }
         return cmdLnkStrip(toAbs(av[2]));
     }
     if (cmd == L"lnktest") {
@@ -1768,7 +1768,7 @@ int main() {
             if (av[i] == L"--lnk-dir" && i + 1 < argc) dirs.push_back(toAbs(av[++i]));
             else if (icon.empty()) icon = toAbs(av[i]);
         }
-        if (icon.empty()) { P(L"[错误] 用法: IconReplacer.exe lnktest <icon.ico> [--lnk-dir <目录>]"); return 2; }
+        if (icon.empty()) { P(L"[错误] 用法: IconAudioReplacer.exe lnktest <icon.ico> [--lnk-dir <目录>]"); return 2; }
         if (dirs.empty()) dirs = defaultLnkDirs();
         return cmdLnkTest(icon, dirs);
     }
@@ -1781,7 +1781,7 @@ int main() {
         usage(); return 0;
     }
     if (cmd == L"apply") {
-        if (argc < 3) { P(L"[错误] 缺少图标路径。示例: IconReplacer.exe apply D:\\a.ico"); return 2; }
+        if (argc < 3) { P(L"[错误] 缺少图标路径。示例: IconAudioReplacer.exe apply D:\\a.ico"); return 2; }
         Opts o;
         std::wstring icon;
         for (int i = 2; i < argc; ++i) {
