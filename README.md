@@ -3,7 +3,8 @@
 统一 Windows 的图标与提示音：把全部文件类型的图标换成同一个 `.ico`，把全部系统音效换成同一个
 WAV，两者都可完整还原。单文件 C++ 实现，只写 `HKCU`，无需管理员权限。
 
-仓库自带的示例图标为蒋结实（`OIP-C_256x256.ico`），可直接试用。
+仓库自带两个可以直接用的样品：图标是蒋结实（`OIP-C_256x256.ico`），音效是
+`我不明白.wav`（48 kHz 立体声，1.5 秒）。
 
 ## 原理
 
@@ -29,6 +30,13 @@ IconAudioReplacer.exe soundoff              :: 只还原系统音效
 ```
 
 双击 exe 进交互菜单；把 `.ico` 或 `.wav` 拖到 exe 上直接应用；双击 `一键恢复.bat` 直接还原。
+
+用仓库自带的样品试一遍：
+
+```bat
+IconAudioReplacer.exe apply OIP-C_256x256.ico
+IconAudioReplacer.exe sound 我不明白.wav
+```
 
 | 选项 | 作用 |
 |---|---|
@@ -86,5 +94,6 @@ g++ -O2 -std=c++17 -s -static -static-libgcc -static-libstdc++ ^
 | `IconAudioReplacer.exe` | 主程序，静态单文件，64 位 Windows 7 及以上 |
 | `icon_replacer.cpp` | 源码，单文件，无第三方库 |
 | `OIP-C_256x256.ico` | 示例图标（蒋结实） |
+| `我不明白.wav` | 示例音效，`sound` 可直接用 |
 | `一键恢复.bat` | 双击还原 |
 | `使用说明.txt` | 详细中文说明 |
