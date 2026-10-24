@@ -3,7 +3,7 @@
 // 自带的图标示例为蒋结实（即仓库内附带的 OIP-C_256x256.ico，可直接拿来试用）。
 //
 // 编译: g++ -O2 -std=c++17 -s -static -static-libgcc -static-libstdc++ ^
-//         -o IconReplacer.exe icon_replacer.cpp -ladvapi32 -lshell32 -lole32
+//         -o IconReplacer.exe icon_replacer.cpp -ladvapi32 -lshell32 -lole32 -lwinmm
 //
 // 原理: Windows 的文件图标不由文件决定, 而由注册表中的"文件类型关联"决定。
 //       本程序在 HKCU\Software\Classes 下为每种类型写入 DefaultIcon,
@@ -49,6 +49,8 @@
 #include <shobjidl.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <mmsystem.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string>
 #include <vector>
@@ -495,7 +497,8 @@ static std::wstring backupDir() {
     return b;
 }
 
-static const wchar_t* STATE_NAMES[] = {L"applied.txt", L"applied_lnk.txt", L"applied_thumb.txt"};
+static const wchar_t* STATE_NAMES[] = {L"applied.txt", L"applied_lnk.txt",
+                                       L"applied_thumb.txt", L"applied_sound.txt"};
 
 static void backupState() {
     std::wstring b = backupDir();
@@ -912,8 +915,243 @@ static void thumbRestore() {
 
 // ------------------------------------------------------------ 刷新
 
-// ------------------------------------------------------------ 进程控制
+// ------------------------------------------------------------ 系统音效
+//
+// 结构是三层子键, 不是"值名":
+//   HKCU\AppEvents\Schemes\Apps\<程序>\<事件>\.Current\(默认) = WAV 完整路径
+// 同级还有个 .Default 子键存该方案的出厂值。只改 .Current, 系统放音优先读它。
+//
+// 系统放音走 PlaySound, 不做解码, 所以必须是 WAV —— 换成 mp3 之类会直接静音。
+// 这里就先拦住, 不让人改完才发现没声音。
 
+struct SoundEntry {
+    std::wstring app;
+    std::wstring evt;
+    bool hadKey = false;      // 原本是否存在 .Current 子键
+    bool hadOld = false;      // 该子键下原本是否有值
+    DWORD oldType = REG_SZ;
+    std::wstring oldValue;
+};
+
+static const wchar_t* SOUND_APPS = L"AppEvents\\Schemes\\Apps";
+
+static std::wstring soundStateFile() { return appDir() + L"\\applied_sound.txt"; }
+
+static bool regReadStr(HKEY k, const wchar_t* name, std::wstring& out, DWORD* type = nullptr) {
+    wchar_t buf[2048];
+    DWORD sz = sizeof(buf), t = 0;
+    if (RegQueryValueExW(k, name, NULL, &t, (BYTE*)buf, &sz) != ERROR_SUCCESS) return false;
+    if (t != REG_SZ && t != REG_EXPAND_SZ) return false;
+    out.assign(buf, sz / sizeof(wchar_t));
+    while (!out.empty() && !out.back()) out.pop_back();
+    if (type) *type = t;
+    return true;
+}
+
+static std::wstring soundKeyPath(const SoundEntry& e) {
+    return std::wstring(SOUND_APPS) + L"\\" + e.app + L"\\" + e.evt;
+}
+
+// 读 <事件>\.Current 的默认值。子键不存在, 或子键下没有值, 都算"没设过"
+static bool readSoundCurrent(const std::wstring& evtKey, SoundEntry& e) {
+    HKEY h;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, (evtKey + L"\\.Current").c_str(), 0,
+                      KEY_READ, &h) != ERROR_SUCCESS) return false;
+    e.hadKey = true;
+    e.hadOld = regReadStr(h, NULL, e.oldValue, &e.oldType);
+    RegCloseKey(h);
+    return true;
+}
+
+static bool enumSoundEvents(std::vector<SoundEntry>& out) {
+    HKEY hApps;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, SOUND_APPS, 0, KEY_READ, &hApps) != ERROR_SUCCESS)
+        return false;
+    for (DWORD i = 0;; ++i) {
+        wchar_t app[256];
+        DWORD n = 256;
+        if (RegEnumKeyExW(hApps, i, app, &n, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+        HKEY hApp;
+        if (RegOpenKeyExW(hApps, app, 0, KEY_READ, &hApp) != ERROR_SUCCESS) continue;
+        for (DWORD j = 0;; ++j) {
+            wchar_t evt[256];
+            DWORD m = 256;
+            if (RegEnumKeyExW(hApp, j, evt, &m, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+            SoundEntry e;
+            e.app = app;
+            e.evt = evt;
+            readSoundCurrent(soundKeyPath(e), e);
+            out.push_back(e);
+        }
+        RegCloseKey(hApp);
+    }
+    RegCloseKey(hApps);
+    return true;
+}
+
+static bool setSoundEvent(const SoundEntry& e, const std::wstring& value) {
+    std::wstring sub = soundKeyPath(e) + L"\\.Current";
+    HKEY h;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, sub.c_str(), 0, NULL, 0, KEY_WRITE,
+                        NULL, &h, NULL) != ERROR_SUCCESS) return false;
+    LONG r = RegSetValueExW(h, NULL, 0, REG_SZ, (const BYTE*)value.c_str(),
+                            (DWORD)((value.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(h);
+    return r == ERROR_SUCCESS;
+}
+
+// 原本什么状态就还原成什么状态:
+//   连 .Current 子键都没有 -> 整个删掉
+//   有子键但没有值        -> 只删值, 子键留着
+//   有值                   -> 按原类型写回
+static bool restoreSoundEvent(const SoundEntry& e) {
+    std::wstring sub = soundKeyPath(e) + L"\\.Current";
+    if (!e.hadKey) {
+        LONG r = RegDeleteKeyExW(HKEY_CURRENT_USER, sub.c_str(), KEY_WOW64_64KEY, 0);
+        return r == ERROR_SUCCESS || r == ERROR_FILE_NOT_FOUND;
+    }
+    HKEY h;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, sub.c_str(), 0, KEY_SET_VALUE, &h) != ERROR_SUCCESS)
+        return false;
+    LONG r;
+    if (e.hadOld) {
+        r = RegSetValueExW(h, NULL, 0, e.oldType, (const BYTE*)e.oldValue.c_str(),
+                           (DWORD)((e.oldValue.size() + 1) * sizeof(wchar_t)));
+    } else {
+        r = RegDeleteValueW(h, NULL);
+        if (r == ERROR_FILE_NOT_FOUND) r = ERROR_SUCCESS;
+    }
+    RegCloseKey(h);
+    return r == ERROR_SUCCESS;
+}
+
+static bool validateWav(const std::wstring& p, std::wstring& why) {
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) { why = L"打不开文件"; return false; }
+    unsigned char hd[12] = {0};
+    DWORD got = 0;
+    bool ok = ReadFile(h, hd, 12, &got, NULL) && got == 12;
+    CloseHandle(h);
+    if (!ok) { why = L"文件太小, 不是有效的 WAV"; return false; }
+    if (memcmp(hd, "RIFF", 4) != 0 || memcmp(hd + 8, "WAVE", 4) != 0) {
+        why = L"不是 WAV 格式。系统放音只认 WAV, 换成 mp3/flac 会直接没声音";
+        return false;
+    }
+    return true;
+}
+
+static bool saveSoundState(const std::wstring& wav, const std::vector<SoundEntry>& es) {
+    std::wstring c = L"GIRS1\n" + wav + L"\n";
+    for (auto& e : es)
+        c += W(e.hadKey ? 1 : 0) + L"\t" + W(e.hadOld ? 1 : 0) + L"\t"
+           + W((int)e.oldType) + L"\t" + e.app + L"\t" + e.evt + L"\t" + e.oldValue + L"\n";
+    return writeTextUtf16(soundStateFile(), c);
+}
+
+static bool loadSoundState(std::wstring& wav, std::vector<SoundEntry>& es) {
+    std::wstring c;
+    if (!readTextUtf16(soundStateFile(), c)) return false;
+    std::vector<std::wstring> lines = split(c, L'\n');
+    size_t i = 0;
+    while (i < lines.size() && lines[i].empty()) i++;
+    if (i >= lines.size()) return false;
+    std::wstring head = lines[i];
+    while (!head.empty() && head.back() == L'\r') head.pop_back();
+    if (head != L"GIRS1") return false;
+    i++;
+    if (i >= lines.size()) return false;
+    wav = lines[i];
+    while (!wav.empty() && wav.back() == L'\r') wav.pop_back();
+    i++;
+    for (; i < lines.size(); ++i) {
+        std::wstring ln = lines[i];
+        while (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+        if (ln.empty()) continue;
+        std::vector<std::wstring> f = split(ln, L'\t');
+        if (f.size() < 6) continue;
+        SoundEntry e;
+        e.hadKey   = (f[0] == L"1");
+        e.hadOld   = (f[1] == L"1");
+        e.oldType  = (DWORD)_wtoi(f[2].c_str());
+        e.app      = f[3];
+        e.evt      = f[4];
+        e.oldValue = f[5];
+        es.push_back(e);
+    }
+    return !es.empty();
+}
+
+// 把记录里面的原值写回。返回还原成功的条数。
+static int soundRestoreAll(const std::vector<SoundEntry>& es) {
+    int n = 0;
+    for (auto& e : es) if (restoreSoundEvent(e)) n++;
+    return n;
+}
+
+static int cmdSound(const std::wstring& pathArg) {
+    hr(L"系统音效");
+    std::wstring wav = toAbs(pathArg);
+    if (!fileExists(wav)) { P(L"[错误] 文件不存在: " + wav); return 2; }
+    std::wstring why;
+    if (!validateWav(wav, why)) { P(L"[错误] " + why); return 2; }
+    P(L"[ok] 声音文件: " + wav);
+
+    // 已有记录说明之前改过一次, 先把原值写回去, 否则会把"改后的声音"当成原值存下来
+    std::wstring prevWav;
+    std::vector<SoundEntry> prevEs;
+    if (loadSoundState(prevWav, prevEs)) {
+        soundRestoreAll(prevEs);
+        DeleteFileW(soundStateFile().c_str());
+        P(L"[info] 检测到上一次的音效记录, 已先还原为原始音效");
+    }
+
+    std::vector<SoundEntry> es;
+    if (!enumSoundEvents(es) || es.empty()) {
+        P(L"[错误] 读不到系统音效设置 (HKCU\\AppEvents\\Schemes\\Apps)");
+        return 2;
+    }
+
+    std::vector<SoundEntry> saved;
+    int done = 0, failed = 0;
+    for (auto& e : es) {
+        if (setSoundEvent(e, wav)) { saved.push_back(e); done++; }
+        else failed++;
+    }
+
+    saveSoundState(wav, saved);
+    P(L"\n[ok] 已替换 " + W(done) + L" 个音效事件" +
+      (failed ? std::wstring(L", 失败 ") + W(failed) : std::wstring(L"")));
+    P(L"[ok] 还原记录: " + soundStateFile());
+
+    std::wstring bk = backupDir();
+    if (!bk.empty()) { backupState(); P(L"[ok] 还原记录另存一份: " + bk); }
+
+    // 试听一下, 顺便确认文件真的能播
+    P(L"\n试听中 ...");
+    PlaySoundW(wav.c_str(), NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+    Sleep(1200);
+    PlaySoundW(NULL, NULL, 0);
+    P(L"系统放音走 PlaySound, 只吃 WAV。个别程序若缓存了旧声音, 重启该程序即可。");
+    return 0;
+}
+
+static int cmdSoundOff() {
+    hr(L"还原系统音效");
+    std::wstring wav;
+    std::vector<SoundEntry> es;
+    if (!loadSoundState(wav, es)) {
+        P(L"[info] 没有音效记录, 当前应该已是系统原始音效。");
+        return 0;
+    }
+    P(L"原音效记录: " + wav);
+    int n = soundRestoreAll(es);
+    P(L"[ok] 已还原 " + W(n) + L"/" + W((int)es.size()) + L" 个音效事件");
+    DeleteFileW(soundStateFile().c_str());
+    return 0;
+}
+
+// ------------------------------------------------------------ 进程控制
 // 按进程名结束进程并等它真正退出。旧实现用 system("taskkill"), 拿不到结果,
 // 也等不到进程死透, 后面删图标缓存时句柄还占着, 于是"删了 0 个"却毫不知情。
 static int killProcessByName(const wchar_t* name) {
@@ -1198,25 +1436,32 @@ static int cmdRestore(bool doRefresh, bool restart) {
 
     std::wstring icon;
     std::vector<Entry> es;
-    if (!loadState(icon, es)) {
+    bool hasIcon = loadState(icon, es);
+
+    // 音效可以单独换过, 那时没有图标记录; 不能因为图标记录为空就把整件事跳过
+    if (!hasIcon && !fileExists(lnkStateFile()) &&
+        !fileExists(thumbStateFile()) && !fileExists(soundStateFile())) {
         P(L"[info] 本机没有应用记录, 当前应该已是系统原始图标。");
         return 0;
     }
-    P(L"原图标:   " + icon);
-    P(L"待还原:   " + W((int)es.size()) + L" 项");
 
-    int ok = 0;
-    for (auto& e : es) {
-        bool r;
-        if (e.created)      r = deleteDefaultIcon(e.cls, NULL, false);            // 新建的, 删掉
-        else if (e.hadOld)  r = deleteDefaultIcon(e.cls, &e.oldValue, false);     // 恢复原值
-        else                r = deleteDefaultIcon(e.cls, NULL, true);             // 只清默认值
-        if (r) ok++;
+    if (hasIcon) {
+        P(L"原图标:   " + icon);
+        P(L"待还原:   " + W((int)es.size()) + L" 项");
+
+        int ok = 0;
+        for (auto& e : es) {
+            bool r;
+            if (e.created)      r = deleteDefaultIcon(e.cls, NULL, false);        // 新建的, 删掉
+            else if (e.hadOld)  r = deleteDefaultIcon(e.cls, &e.oldValue, false); // 恢复原值
+            else                r = deleteDefaultIcon(e.cls, NULL, true);         // 只清默认值
+            if (r) ok++;
+        }
+
+        DeleteFileW(stateFile().c_str());
+        DeleteFileW(installedIcon().c_str());
+        P(L"\n[ok] 已还原 " + W(ok) + L" 项, 状态记录已清除");
     }
-
-    DeleteFileW(stateFile().c_str());
-    DeleteFileW(installedIcon().c_str());
-    P(L"\n[ok] 已还原 " + W(ok) + L" 项, 状态记录已清除");
 
     // 快捷方式: 把改写过的图标位置写回去
     std::vector<std::wstring> changedLnks;
@@ -1243,6 +1488,15 @@ static int cmdRestore(bool doRefresh, bool restart) {
         P(L"[ok] 缩略图设置已恢复");
     }
 
+    // 系统音效
+    std::wstring swav;
+    std::vector<SoundEntry> ses;
+    if (loadSoundState(swav, ses)) {
+        int sn = soundRestoreAll(ses);
+        P(L"[ok] 已还原 " + W(sn) + L"/" + W((int)ses.size()) + L" 个系统音效");
+        DeleteFileW(soundStateFile().c_str());
+    }
+
     if (doRefresh) refreshIcons(restart, &changedLnks);
     hr(L"完成");
     P(L"系统图标已恢复原状。");
@@ -1261,6 +1515,14 @@ static int cmdStatus() {
     } else {
         P(L"状态:     未应用 (系统原始图标)");
     }
+
+    std::wstring swav;
+    std::vector<SoundEntry> ses;
+    if (loadSoundState(swav, ses))
+        P(L"音效:     已替换为 " + swav + L" (" + W((int)ses.size()) + L" 个事件)");
+    else
+        P(L"音效:     未改动");
+
     P(L"状态目录: " + appDir());
     std::wstring bk = backupDir();
     if (!bk.empty()) P(L"备份目录: " + bk);
@@ -1389,6 +1651,8 @@ static void usage() {
     P(L"  IconReplacer.exe list            列出将被修改的类型");
     P(L"  IconReplacer.exe lnktest <ico>   自检快捷方式能否改写 (改完立即还原)");
     P(L"  IconReplacer.exe lnkstrip <lnk>  自检单个快捷方式的图标位置能否被正常解析");
+    P(L"  IconReplacer.exe sound <wav>     把所有系统音效换成这个 WAV");
+    P(L"  IconReplacer.exe soundoff        只还原系统音效");
     P(L"");
     P(L"选项:");
     P(L"  --dry-run           只统计不写入");
@@ -1417,9 +1681,10 @@ static int menu() {
         P(L"  2  还原为系统原始图标");
         P(L"  3  查看当前状态");
         P(L"  4  列出将被修改的类型");
+        P(L"  5  替换系统音效 (把所有提示音换成同一个 WAV)");
         P(L"  0  退出");
         P(L"");
-        std::wstring c = readLine(L"请选择 [0-4]: ");
+        std::wstring c = readLine(L"请选择 [0-5]: ");
         if (c == L"1") {
             std::wstring p = readLine(L"请输入 .ico 路径 (也可把文件拖进窗口): ");
             if (p.empty()) { P(L"路径为空。"); continue; }
@@ -1435,6 +1700,10 @@ static int menu() {
             cmdStatus();
         } else if (c == L"4") {
             Opts o; cmdList(o);
+        } else if (c == L"5") {
+            std::wstring p = readLine(L"请输入 WAV 路径 (也可把文件拖进窗口): ");
+            if (p.empty()) { P(L"路径为空。"); continue; }
+            cmdSound(p);
         } else if (c == L"0" || c.empty()) {
             return 0;
         } else {
@@ -1467,6 +1736,11 @@ int main() {
         return cmdApply(cmd, o);
     }
 
+    // 拖放 .wav 到 exe 上 -> 直接替换系统音效
+    if (cmd.size() > 4 && lower(cmd.substr(cmd.size() - 4)) == L".wav") {
+        return cmdSound(cmd);
+    }
+
     if (cmd == L"status") return cmdStatus();
     if (cmd == L"restore" || cmd == L"还原") {
         bool nr = false, nrs = false;
@@ -1475,6 +1749,13 @@ int main() {
             if (av[i] == L"--no-restart") nrs = true;
         }
         return cmdRestore(!nr, !nrs);
+    }
+    if (cmd == L"sound") {
+        if (argc < 3) { P(L"[错误] 用法: IconReplacer.exe sound <声音.wav>"); return 2; }
+        return cmdSound(av[2]);
+    }
+    if (cmd == L"soundoff") {
+        return cmdSoundOff();
     }
     if (cmd == L"lnkstrip") {
         if (argc < 3) { P(L"[错误] 用法: IconReplacer.exe lnkstrip <某个.lnk>"); return 2; }

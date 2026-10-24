@@ -24,10 +24,11 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
       2 还原为系统原始图标
       3 查看当前状态
       4 列出将被修改的类型
+      5 替换系统音效（把所有提示音换成同一个 WAV）
       0 退出
 
-方式 B：把 .ico 文件拖到 IconReplacer.exe 的图标上
-    松手即应用，最省事。
+方式 B：把 .ico（或 .wav）文件拖到 IconReplacer.exe 的图标上
+    松手即应用，最省事。拖 .ico 换图标，拖 .wav 换音效。
 
 方式 C：命令行（cmd 或 PowerShell 里）
     IconReplacer.exe apply D:\my.ico         应用
@@ -35,6 +36,9 @@ HKCU\Software\Classes 下，为每一种类型写入 DefaultIcon 指向你的图
     IconReplacer.exe status                  查看状态
     IconReplacer.exe list                    列出将被改的类型
     IconReplacer.exe lnktest <ico>           自检快捷方式能否改写（改完立即还原）
+    IconReplacer.exe lnkstrip <lnk>          自检单个快捷方式的图标位置
+    IconReplacer.exe sound D:\my.wav         替换全部系统音效
+    IconReplacer.exe soundoff                只还原系统音效
     IconReplacer.exe help                    帮助
 
     可选开关：
@@ -82,7 +86,7 @@ restore 一次会还原三样东西：
       所以：别删 _restore\ 文件夹。
 
 
-五、三类「硬骨头」现在怎么处理
+五、「硬骨头」现在怎么处理
 ------------------------------------------------
 .lnk
     图标写在每个快捷方式文件的内部，注册表的 DefaultIcon 管不到它。
@@ -120,6 +124,21 @@ restore 一次会还原三样东西：
     任务栏 / 开始菜单 / 桌面快捷方式属于 .lnk，现在也会被改写
     改完后需要重启资源管理器才会立刻生效，程序默认会自动做这一步
     （会关闭你已打开的所有文件夹窗口，不影响文件）
+
+系统音效（不属于图标，单独一条路）
+    IconReplacer.exe sound D:\my.wav
+    把注册表里 80 多个「程序 + 事件」的音效全部指向这个文件，
+    包括提示音、错误音、通知音，以及资源管理器和各软件自己的事件音。
+    改完会自动试听一次，确认文件真的能播。
+
+    只收 WAV。系统放音是直接喂给 PlaySound 的，不做解码，
+    传 mp3 / flac 进去会当场被拒绝，而不是改完才发现没声音。
+    要转格式：格式工厂、ffmpeg（ffmpeg -i a.mp3 -acodec pcm_s16le a.wav），
+    或在任意在线转换站点转成 WAV。
+
+    还原：IconReplacer.exe soundoff
+    或者直接用 restore，会连图标一起还原。
+    有些程序把声音缓存在自己进程里，改完要重启那个程序才听得到变化。
 
 
 六、装在别的电脑上
